@@ -1,4 +1,5 @@
 import { AuditInfo, ContentFileHash, Entity, EntityId, EntityType, Fetcher } from 'dcl-catalyst-commons'
+import { validations } from './validations'
 
 /**
  * @public
@@ -65,7 +66,7 @@ export type ExternalCalls = {
  * @public
  */
 export interface Validator {
-  validate(deployment: DeploymentToValidate): Promise<ValidationResponse>
+  validate(deployment: DeploymentToValidate, validations?: ValidationName[]): Promise<ValidationResponse>
 }
 
 /**
@@ -131,3 +132,5 @@ export const fromErrors = (...errors: Errors): ValidationResponse => ({
   ok: errors.length === 0,
   errors: errors.length > 0 ? errors : undefined,
 })
+
+export type ValidationName = typeof validations[number][0]

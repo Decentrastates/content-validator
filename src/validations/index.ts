@@ -65,4 +65,13 @@ export const statelessValidations = [entityStructure, ipfsHashing, metadata]
  * All validations that are run on a deployment.
  * @public
  */
-export const validations = [...statelessValidations, ...statefulValidations]
+export const validations = {
+  ENTITY_STRUCTURE: entityStructure,
+  IPFS_HASHING: ipfsHashing,
+  METADATA: metadata,
+  SIGNATURE: signature,
+  CONTENT: content,
+  SIZE: size,
+  ACCESS_CHECKER: access,
+  WEARABLE: wearable,
+} as const
