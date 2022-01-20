@@ -1,9 +1,12 @@
+import { EntityType, Hashing } from 'dcl-catalyst-commons'
 import { WearableCollection, wearables } from '../../../src/validations/access-checker/wearables'
-import { buildWearableDeployment } from '../../setup/deployments'
+import { buildDeployment, buildWearableDeployment } from '../../setup/deployments'
+import { buildEntity } from '../../setup/entity'
 import {
   buildExternalCalls,
   buildSubgraphs,
   fetcherWithoutAccess,
+  fetcherWithTPW,
   fetcherWithValidCollectionAndCreator,
 } from '../../setup/mock'
 
@@ -105,14 +108,17 @@ describe('Access: wearables', () => {
 
   const collectionsUrl = 'http://someUrl'
   const blocksUrl = 'http://blocksUrl'
+  const thirdPartySubgraphUrl = 'http://thirdPartyUrl'
+  const ethAddress = 'address'
+  const subgraphs = buildSubgraphs({
+    L2: {
+      thirdParty: thirdPartySubgraphUrl,
+      collections: collectionsUrl,
+      blocks: blocksUrl,
+    },
+  })
+
   it('When urn network belongs to L2, then L2 subgraph is used', async () => {
-    const ethAddress = 'address'
-    const subgraphs = buildSubgraphs({
-      L2: {
-        collections: collectionsUrl,
-        blocks: blocksUrl,
-      },
-    })
     const mockedQueryGraph = fetcherWithValidCollectionAndCreator(ethAddress)
     const externalCalls = buildExternalCalls({
       subgraphs,
@@ -132,14 +138,6 @@ describe('Access: wearables', () => {
   })
 
   it('When urn network belongs to L1, then L1 subgraph is used', async () => {
-    const ethAddress = 'address'
-    const subgraphs = buildSubgraphs({
-      L1: {
-        landManager: '',
-        collections: collectionsUrl,
-        blocks: blocksUrl,
-      },
-    })
     const mockedQueryGraph = fetcherWithoutAccess()
     const externalCalls = buildExternalCalls({
       subgraphs,
@@ -158,13 +156,6 @@ describe('Access: wearables', () => {
   })
 
   it(`When urn network belongs to L2, and address doesn't have access, then L2 subgraph is used twice`, async () => {
-    const ethAddress = 'address'
-    const subgraphs = buildSubgraphs({
-      L2: {
-        collections: collectionsUrl,
-        blocks: blocksUrl,
-      },
-    })
     const mockedQueryGraph = fetcherWithoutAccess()
     const externalCalls = buildExternalCalls({
       subgraphs,
@@ -185,14 +176,6 @@ describe('Access: wearables', () => {
   })
 
   it(`When urn network belongs to L1, and address doesn't have access, then L1 subgraph is used twice`, async () => {
-    const ethAddress = 'address'
-    const subgraphs = buildSubgraphs({
-      L1: {
-        landManager: '',
-        collections: collectionsUrl,
-        blocks: blocksUrl,
-      },
-    })
     const mockedQueryGraph = fetcherWithoutAccess()
     const externalCalls = buildExternalCalls({
       subgraphs,
@@ -210,5 +193,64 @@ describe('Access: wearables', () => {
     expect(mockedQueryGraph).toHaveBeenNthCalledWith(1, subgraphs.L1.blocks, expect.anything(), expect.anything())
     expect(mockedQueryGraph).toHaveBeenNthCalledWith(2, subgraphs.L1.collections, expect.anything(), expect.anything())
     expect(mockedQueryGraph).toHaveBeenNthCalledWith(3, subgraphs.L1.collections, expect.anything(), expect.anything())
+  })
+
+  it(`When urn network belongs to a third party wearable, then TPR subgraph is used twice`, async () => {
+    const mockedQueryGraph = fetcherWithoutAccess()
+    const externalCalls = buildExternalCalls({
+      subgraphs,
+      queryGraph: mockedQueryGraph,
+      ownerAddress: () => ethAddress,
+    })
+
+    const deployment = buildWearableDeployment([
+      'urn:decentraland:mumbai:collections-thirdparty:thirdparty2:collection1:0',
+    ])
+
+    await wearables.validate({ deployment, externalCalls })
+
+    expect(mockedQueryGraph).toBeCalledTimes(3)
+    expect(mockedQueryGraph).toHaveBeenNthCalledWith(1, subgraphs.L2.blocks, expect.anything(), expect.anything())
+    expect(mockedQueryGraph).toHaveBeenNthCalledWith(2, subgraphs.L2.thirdParty, expect.anything(), expect.anything())
+    expect(mockedQueryGraph).toHaveBeenNthCalledWith(3, subgraphs.L2.thirdParty, expect.anything(), expect.anything())
+  })
+
+  describe('Given a third party urn', () => {
+    const TPW_URN = 'urn:decentraland:mumbai:collections-thirdparty:thirdparty2:collection1:0'
+    describe('When an item with given urn exists', () => {
+      describe('And content hash is correct', () => {
+        it('Then validation is correct', async () => {
+          const content = [{ file: 'someFile', hash: 'someHash' }]
+          const entity = buildEntity({ pointers: [TPW_URN], type: EntityType.WEARABLE, content })
+          const deployment = buildDeployment({ entity })
+
+          const { hash } = await Hashing.calculateMultipleHashesADR32(content)
+
+          const mockedQueryGraph = fetcherWithTPW(TPW_URN, hash)
+          const externalCalls = buildExternalCalls({
+            subgraphs,
+            queryGraph: mockedQueryGraph,
+            ownerAddress: () => ethAddress,
+          })
+
+          const result = await wearables.validate({ deployment, externalCalls })
+          expect(result.ok).toBeTruthy()
+        })
+      })
+      describe('And content hash does not match', () => {
+        const mockedQueryGraph = fetcherWithTPW(TPW_URN, 'someOtherHash')
+        it('Then validation fails', async () => {
+          const deployment = buildWearableDeployment([TPW_URN])
+          const externalCalls = buildExternalCalls({
+            subgraphs,
+            queryGraph: mockedQueryGraph,
+            ownerAddress: () => ethAddress,
+          })
+          const result = await wearables.validate({ deployment, externalCalls })
+
+          expect(result.errors).toEqual([`The third-party item ${TPW_URN} does not exist.`])
+        })
+      })
+    })
   })
 })

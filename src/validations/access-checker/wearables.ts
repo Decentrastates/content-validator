@@ -1,6 +1,12 @@
 import { EthAddress } from '@dcl/schemas'
-import { BlockchainCollectionV1Asset, BlockchainCollectionV2Asset, OffChainAsset, parseUrn } from '@dcl/urn-resolver'
-import { Hashing, Timestamp } from 'dcl-catalyst-commons'
+import {
+  BlockchainCollectionThirdParty,
+  BlockchainCollectionV1Asset,
+  BlockchainCollectionV2Asset,
+  OffChainAsset,
+  parseUrn,
+} from '@dcl/urn-resolver'
+import { Entity, EntityContentItemReference, Hashing, Timestamp } from 'dcl-catalyst-commons'
 import ms from 'ms'
 import { EntityWithEthAddress, ExternalCalls, validationFailed } from '../..'
 import { OK, Validation } from '../../types'
@@ -12,7 +18,11 @@ const L2_NETWORKS = ['matic', 'mumbai']
 // we will place will try to find the closes block to the timestamp, but only if it's within the window
 const ACCESS_WINDOW_IN_SECONDS = ms('15s') / 1000
 
-type SupportedAssets = BlockchainCollectionV1Asset | BlockchainCollectionV2Asset | OffChainAsset
+type SupportedAssets =
+  | BlockchainCollectionV1Asset
+  | BlockchainCollectionV2Asset
+  | BlockchainCollectionThirdParty
+  | OffChainAsset
 
 type WearableItemPermissionsData = {
   collectionCreator: string
@@ -42,6 +52,15 @@ type WearableCollectionItem = {
   contentHash: string
 }
 
+type ThirdPartyItem = {
+  id: string
+  contentHash: string
+}
+
+type ThirdPartyItems = {
+  items: ThirdPartyItem[]
+}
+
 const alreadySeen = (resolvedPointers: SupportedAssets[], parsed: SupportedAssets): boolean => {
   return resolvedPointers.some((alreadyResolved) => resolveSameUrn(alreadyResolved, parsed))
 }
@@ -54,20 +73,15 @@ const resolveSameUrn = (alreadyParsed: SupportedAssets, parsed: SupportedAssets)
   return JSON.stringify(alreadyParsedCopy) == JSON.stringify(parsedCopy)
 }
 
-const parseUrnNoFail = async (urn: string): Promise<SupportedAssets | null> => {
+const parseUrnNoFail = async (urn: string): Promise<SupportedAssets | undefined> => {
   try {
     const parsed = await parseUrn(urn)
-    if (parsed?.type === 'blockchain-collection-v1-asset') {
-      return parsed
-    }
-    if (parsed?.type === 'blockchain-collection-v2-asset') {
-      return parsed
-    }
-    if (parsed?.type === 'off-chain') {
-      return parsed
-    }
+    if (!parsed) return
+    if (parsed.type === 'blockchain-collection-v1-asset') return parsed
+    if (parsed.type === 'blockchain-collection-v2-asset') return parsed
+    if (parsed.type === 'blockchain-collection-third-party') return parsed
+    if (parsed.type === 'off-chain') return parsed
   } catch {}
-  return null
 }
 
 const hasPermission = async (
@@ -91,19 +105,11 @@ const hasPermission = async (
 
     if (!!permissions.contentHash) {
       const deployedByCommittee = permissions.committee.includes(ethAddressLowercase)
-      const calculateHashes = () => {
-        // Compare both by key and hash
-        const compare = (a: { key: string; hash: string }, b: { key: string; hash: string }) => {
-          if (a.hash > b.hash) return 1
-          else if (a.hash < b.hash) return -1
-          else return a.key > b.key ? 1 : -1
-        }
-
-        const contentAsJson = (content ?? []).map(({ file, hash }) => ({ key: file, hash })).sort(compare)
-        const buffer = Buffer.from(JSON.stringify({ content: contentAsJson, metadata }))
-        return Promise.all([Hashing.calculateBufferHash(buffer), Hashing.calculateIPFSHash(buffer)])
-      }
-      return deployedByCommittee && (await calculateHashes()).includes(permissions.contentHash)
+      const hashes = [
+        (await Hashing.calculateMultipleHashesADR32(content ?? [], metadata)).hash,
+        (await Hashing.calculateMultipleHashesADR32LegacyQmHash(content ?? [], metadata)).hash,
+      ]
+      return deployedByCommittee && hashes.includes(permissions.contentHash)
     } else {
       const addressHasAccess =
         (permissions.collectionCreator && permissions.collectionCreator === ethAddressLowercase) ||
@@ -276,6 +282,57 @@ const checkCollectionAccess = async (
   }
 }
 
+const existsItem = async (
+  subgraphUrl: string,
+  urn: string,
+  block: number,
+  externalCalls: ExternalCalls,
+  content?: EntityContentItemReference[],
+  metadata?: any
+): Promise<boolean> => {
+  const query = `
+    query getItems($urn: String!, $hash: String!, $block: Int!) {
+      items(where:{ urn: $urn, contentHash: $hash }, block: { number: $block }) {
+        id,
+        contentHash
+      }
+    }
+    `
+  const { hash } = await Hashing.calculateMultipleHashesADR32(content ?? [], metadata)
+
+  const result = await externalCalls.queryGraph<ThirdPartyItems | undefined>(subgraphUrl, query, {
+    urn,
+    hash,
+    block,
+  })
+
+  return result?.items !== undefined && result?.items.length > 0 && result.items[0].contentHash === hash
+}
+
+const checkItemExistence = async (
+  urn: string,
+  collectionsSubgraphUrl: string,
+  blocksSubgraphUrl: string,
+  { timestamp, content, metadata }: Entity,
+  externalCalls: ExternalCalls
+): Promise<boolean> => {
+  try {
+    const { blockNumberAtDeployment, blockNumberFiveMinBeforeDeployment } = await findBlocksForTimestamp(
+      blocksSubgraphUrl,
+      timestamp,
+      externalCalls
+    )
+
+    const existsOnBlock = async (blockNumber: number | undefined) =>
+      !!blockNumber && existsItem(collectionsSubgraphUrl, urn, blockNumber, externalCalls, content, metadata)
+
+    return (await existsOnBlock(blockNumberAtDeployment)) || (await existsOnBlock(blockNumberFiveMinBeforeDeployment))
+  } catch (error) {
+    // this.LOGGER.error(`Error checking item existence (${urn}).`, error)
+    return false
+  }
+}
+
 /**
  * Given the pointers (URNs), determine which layer should be used to check the access.
  * Checks if the ethereum address has access to the collection.
@@ -303,16 +360,13 @@ export const wearables: Validation = {
 
     const parsed = resolvedPointers[0]
 
-    if (!['off-chain', 'blockchain-collection-v1-asset', 'blockchain-collection-v2-asset'].includes(parsed.type))
-      return validationFailed(`Could not resolve the contractAddress of the urn ${parsed}`)
-
     if (parsed.type === 'off-chain') {
       // Validate Off Chain Asset
       if (!externalCalls.isAddressOwnedByDecentraland(ethAddress))
         return validationFailed(
           `The provided Eth Address '${ethAddress}' does not have access to the following wearable: '${parsed.uri}'`
         )
-    } else if (parsed?.type === 'blockchain-collection-v1-asset' || parsed?.type === 'blockchain-collection-v2-asset') {
+    } else if (parsed.type === 'blockchain-collection-v1-asset' || parsed.type === 'blockchain-collection-v2-asset') {
       // L1 or L2 so contractAddress is present
       const collection = parsed.contractAddress!
       const network = parsed.network
@@ -351,6 +405,16 @@ export const wearables: Validation = {
           )
         }
       }
+    } else if (parsed.type === 'blockchain-collection-third-party') {
+      const urn = pointers[0]
+      const existsItem = await checkItemExistence(
+        urn,
+        externalCalls.subgraphs.L2.thirdParty,
+        externalCalls.subgraphs.L2.blocks,
+        deployment.entity,
+        externalCalls
+      )
+      if (!existsItem) return validationFailed(`The third-party item ${urn} does not exist.`)
     }
     return OK
   },

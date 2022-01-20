@@ -9,17 +9,7 @@ export const buildExternalCalls = (externalCalls?: Partial<ExternalCalls>): Exte
   ownerAddress: () => '',
   isAddressOwnedByDecentraland: () => false,
   queryGraph: jest.fn(),
-  subgraphs: {
-    L1: {
-      landManager: '',
-      blocks: '',
-      collections: '',
-    },
-    L2: {
-      blocks: '',
-      collections: '',
-    },
-  },
+  subgraphs: buildSubgraphs(),
   ...externalCalls,
 })
 
@@ -31,6 +21,7 @@ export const buildSubgraphs = (subgraphs?: Partial<Subgraphs>): Subgraphs => ({
     collections: '',
   },
   L2: {
+    thirdParty: '',
     blocks: '',
     collections: '',
   },
@@ -41,7 +32,10 @@ let queryGraph: Fetcher['queryGraph']
 export const mockedQueryGraph = () => jest.fn() as jest.MockedFunction<typeof queryGraph>
 
 const COMMITTEE_MEMBER = '0xCOMMITEE_MEMBER'
-export const buildMockedQueryGraph = (collection?: Partial<WearableCollection>) =>
+export const buildMockedQueryGraph = (
+  collection?: Partial<WearableCollection>,
+  tpw: { urn: string; contentHash: string } = { urn: '', contentHash: '' }
+) =>
   mockedQueryGraph().mockImplementation(async (url, _query, _variables) => {
     const withDefaults = {
       collections: [
@@ -63,6 +57,8 @@ export const buildMockedQueryGraph = (collection?: Partial<WearableCollection>) 
     }
     if (url.includes('block')) {
       return Promise.resolve({ after: [{ number: 10 }], fiveMinAfter: [{ number: 5 }] })
+    } else if (url.includes('thirdParty')) {
+      return Promise.resolve({ items: [{ id: tpw.urn, contentHash: tpw.contentHash }] })
     } else {
       return Promise.resolve(withDefaults)
     }
@@ -110,3 +106,5 @@ export const fetcherWithInvalidCollectionAndContentHash = (contentHash: string) 
     isCompleted: true,
     isApproved: true,
   })
+
+export const fetcherWithTPW = (urn: string, contentHash: string) => buildMockedQueryGraph({}, { urn, contentHash })
