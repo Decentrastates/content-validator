@@ -1,3 +1,4 @@
+import { ILoggerComponent } from '@well-known-components/interfaces'
 import { AuditInfo, ContentFileHash, Entity, EntityId, Fetcher } from 'dcl-catalyst-commons'
 
 /**
@@ -89,7 +90,7 @@ export type ValidationResponse = {
  * @public
  */
 export type Validation = {
-  validate: (args: ValidationArgs) => ValidationResponse | Promise<ValidationResponse>
+  validate: (args: ValidationArgs, logs?: ILoggerComponent.ILogger) => ValidationResponse | Promise<ValidationResponse>
 }
 
 /**
@@ -132,3 +133,11 @@ export const fromErrors = (...errors: Errors): ValidationResponse => ({
   ok: errors.length === 0,
   errors: errors.length > 0 ? errors : undefined,
 })
+
+/**
+ * Components that can be used to validate deployments.
+ * @public
+ */
+export type ContentValidatorComponents = {
+  logs: ILoggerComponent
+}
