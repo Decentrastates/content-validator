@@ -27,6 +27,8 @@ export const profiles: Validation = {
       )
     }
 
+    // TODO Add wearables ownership validations
+
     return OK
   },
 }
